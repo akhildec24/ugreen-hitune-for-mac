@@ -1,0 +1,13 @@
+# Local / private
+.claude/
+NOTES.md
+
+# macOS
+.DS_Store
+
+# UgreenEQ build outputs and generated files
+UgreenEQ/UgreenEQ.app/
+UgreenEQ/AppIcon.iconset/
+UgreenEQ/AppIcon.icns
+UgreenEQ/make-icon
+UgreenEQ/*.bak
