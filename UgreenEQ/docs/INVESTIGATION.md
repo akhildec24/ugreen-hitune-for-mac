@@ -129,6 +129,15 @@ set Jazz     →  aa bb cc 05 01 01 a1 91
 - **Noise control:** Off `D0`, Light `C1`, Medium `B1`, Deep `A1`, Adaptive `D1`, Transparency `D2`. "Off" can
   read back as `A0`/`B0`/`C0`/`D0`, depending on the last active depth; the app treats all of them as Off.
 
+### Codec report (cmd 15) and verified toggle
+
+- Cmd 15, data `00` -> payload pairs `(slot, codec)`; slot 1 and 2 are the two dual-connect devices; codec `0` SBC,
+  `2` AAC, `255` LDAC (read-only; verified here: `01 02`).
+- Cmd 13 is sent by the headphones unsolicited after some commands: `01 01 <device name> <6-byte address>` (info about
+  the connected device in slot 1).
+- Cmd 11 (Hi-Res audio decoding on/off) is now **verified on this unit** (see section 7). The other toggles (6, 8,
+  18, 19) match the command numbers in UGREEN's own Android app but are still not individually tested here.
+
 ## 4a. Battery level: what is reported where
 
 | Source | What it said |
@@ -189,15 +198,45 @@ Researched, **not attempted**; nothing was ever written to the headphones' flash
 
 Decision: not worth the risk for the likely outcome (the same bass cut the presets already provide).
 
-## 7. Hi-res audio
+## 7. Hi-res audio and LDAC
 
-- Android phones play hi-res over Bluetooth using the **LDAC** codec, which UGREEN's app enables (on Android
-  only, per a review).
-- To our knowledge macOS supports only **SBC and AAC** for Bluetooth and has no LDAC **(unverified on macOS
-  27)**. We could not check which codec the Mac negotiated because the headphones were on USB at the time.
-- The practical hi-res route on a Mac is **USB-C at 96 kHz / 24-bit** (§3). Ideas not pursued: a USB Bluetooth
-  transmitter with LDAC support; the known SBC-bitpool tweak for macOS (`defaults write
-  com.apple.BluetoothAudioAgent`), which helps SBC only.
+**Update.** The headphones **do offer LDAC over Bluetooth, and a Mac simply does not use it.** Evidence:
+
+1. *Advertised A2DP endpoints (measured).* Asking the headphones for their stream endpoints (AVDTP DISCOVER +
+   GET_CAPABILITIES, read-only, `UgreenEQ/tools/avdtp-probe.swift`) returned four sink endpoints:
+
+   | SEID | Codec | Capability bytes |
+   |---|---|---|
+   | 1 | SBC | `00 00 ff ff 02 26` |
+   | 2 | AAC (MPEG-2,4) | `00 02 80 01 8c 82 00 00` |
+   | 3 | **Vendor-specific** | `00 ff 2d 01 00 00 aa 00 3c 07` = vendor `0x0000012D` (Sony), codec `0x00AA` (**LDAC**); sampling-frequency byte `3c` = 44.1 / 48 / 88.2 / 96 kHz |
+   | 4 | SBC | `00 00 ff ff 02 26` |
+
+2. *macOS's own log* shows the same four endpoints (`bluetoothd`, when the Mac starts the connection) and that
+   macOS then picks **AAC at 44.1 kHz (about 127 kbps VBR)**. When the headphones start the connection, macOS logs only
+   "2 available endpoints"; it ignores the vendor endpoint.
+3. *UGREEN's protocol has a codec report:* command 15 (request data `00`) returns `(slot, codec)` pairs, one slot
+   per connected device (dual connect). Codec values: `0` SBC, `2` AAC, `255` LDAC. Measured here: `01 02` (slot 1 =
+   AAC), matching the Mac log.
+4. UGREEN's product page claims Bluetooth 5.4, LDAC, and "96kHz/24-bit ... 990kbps" (the top LDAC mode).
+
+**Hi-Q decoding does not gate LDAC.** Setting "Hi-Res audio decoding" (cmd 11) on or off did not change whether the
+LDAC endpoint is advertised (the probe saw all four endpoints in both states; failed attempts were timing, not the
+setting). The setting is verified to work: cmd 11 `01`/`00` flips state byte 7 and the headphones reply `01`. It is
+exclusive with dual connect, audio sharing and the AI function in UGREEN's app.
+
+**What this does not change.** macOS's Bluetooth service chooses between SBC and AAC and exposes no way for an app to
+pick another codec. Getting LDAC from a Mac therefore needs software that speaks A2DP itself and feeds it audio through
+a virtual output device (the approach of third-party tools such as Blue Bloom). That is a large, fragile project
+(private macOS Bluetooth interfaces, a Core Audio plug-in running inside `coreaudiod`, forced takeover of the
+headphones' audio link) and has not been attempted here. Without it, the practical hi-res route on a Mac is
+**USB-C at 96 kHz / 24-bit** (§3). Not pursued: a USB Bluetooth transmitter with LDAC support; the SBC-bitpool tweak
+for macOS, which helps SBC only.
+
+**Method notes.** The AVDTP probe cannot normally open the signalling channel because macOS holds it; it disconnects the
+headphones, reconnects them, and opens PSM 25 within about 100 ms. It succeeded in roughly half of the attempts, and
+it briefly interrupts audio. The headphones also expose, over BLE, three custom services besides Jieli's `AE00`
+(`E6781EC0-BCE6-11E5-8439-0002A5D5C51B`, `66666666-...`, `86868686-...`); we did not investigate them.
 
 ## 8. Approaches considered and not taken
 

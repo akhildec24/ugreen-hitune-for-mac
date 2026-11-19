@@ -1,5 +1,6 @@
 // RESEARCH TOOL: standalone command-line client for the UGREEN protocol over Bluetooth RFCOMM (channel 1).
 // Usage:  swiftc -O ugreen-cli.swift -o ugreen-cli && ./ugreen-cli            (read-only: prints state)
+//          ./ugreen-cli codec                                                (read-only: current Bluetooth codec per connected device)
 //          ./ugreen-cli seteq <classic|jazz|electronic|pop|classical|rock|bass|treble>   (changes the EQ preset)
 // Requires the headphones to be paired and connected over Bluetooth (found by name, "HiTune").
 
@@ -64,5 +65,8 @@ send(packet(4, [0]), "get device state (read-only)")
 if args.count >= 3, args[1] == "seteq", let code = eqNames[args[2].lowercased()] {
   send(packet(5, [UInt8(code)]), "set EQ \(args[2])")
   send(packet(4, [0]), "re-read state")
+}
+if args.count >= 2, args[1] == "codec" {   // read-only: which codec is each connected device using? reply = (slot, codec) pairs; 0 SBC, 2 AAC, 255 LDAC
+  send(packet(15, [0]), "current codec (cmd 15, read-only)")
 }
 c.close()

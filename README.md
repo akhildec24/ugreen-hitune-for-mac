@@ -104,17 +104,19 @@ The serial channel can only be opened by one program at a time, so **quit Ugreen
   protocol UGREEN's own app is built on). The headphones' tuning cannot be edited from the Mac.
 - **Bluetooth only.** Over USB-C the headphones expose audio and media keys only; there is no control
   interface.
-- **No LDAC on a Mac.** The headphones support hi-res over Bluetooth with LDAC (e.g. from Android). To our
-  knowledge macOS offers only SBC and AAC, so over Bluetooth the Mac cannot reach that quality. Use the
-  USB-C cable for 96 kHz / 24-bit. (We did not verify codec support on macOS 27.)
+- **No LDAC on a Mac (yet).** The headphones *do* offer LDAC: their A2DP endpoint list includes Sony's LDAC (vendor
+  `0x012D`, codec `0xAA`, up to 96 kHz). macOS never selects it (it uses SBC/AAC and gives apps no way to choose
+  another codec), so a Mac gets AAC at 44.1 kHz. Using LDAC would need software that implements A2DP itself with a
+  virtual audio output, which is a large and fragile project and is not part of this app. Use the USB-C cable for
+  96 kHz / 24-bit. See `UgreenEQ/docs/INVESTIGATION.md` section 7.
 - **Battery level comes from RCSP, not the usual places.** On this firmware the UGREEN protocol's battery byte
   and the level macOS shows (via the hands-free link) were both stuck at 100% for days, while the RCSP value
   fell steadily (92% → 91% → 90% over several hours of use). The absolute accuracy of the RCSP number has not
   been checked against a second trusted source, and the charging flag (probably bit 7) is not shown. If the
   BLE link cannot be made (for example the headphones are not advertising), no battery is shown.
 - **Feature toggles are lightly verified.** Sound presets and noise control were checked against the real
-  headphones. Spatial audio, Game mode, Dual connect and Hi-Q decoding use command numbers taken from
-  Gadgetbridge's implementation and have not been individually confirmed on this unit.
+  headphones. Hi-Q decoding was verified on this unit. Spatial audio, Game mode and Dual connect use command numbers that match
+  Gadgetbridge's implementation and UGREEN's own Android app, but have not been individually tested here.
 - The app finds the headphones by name (`HiTune`) and uses RFCOMM channel 1; other UGREEN models may differ.
 - Whether the chosen preset survives powering the headphones off and on was not tested.
 - The "factory reset" command exists in the protocol and is **intentionally not implemented**.
