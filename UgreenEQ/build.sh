@@ -11,7 +11,7 @@ cp AppIcon.icns UgreenEQ.app/Contents/Resources/AppIcon.icns
 codesign --force --sign - UgreenEQ.app
 echo "Built UgreenEQ.app"
 if [ "$1" = "--install" ]; then
-  pkill -x UgreenEQ; sleep 1
+  pkill -x UgreenEQ || true; sleep 1
   rm -rf /Applications/UgreenEQ.app && cp -R UgreenEQ.app /Applications/UgreenEQ.app
   touch /Applications/UgreenEQ.app
   open /Applications/UgreenEQ.app

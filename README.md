@@ -43,7 +43,7 @@ cd UgreenEQ
   and can ask again after a rebuild because the ad-hoc signature changes.
 - It is not notarised. See [Signing notes](#signing-notes).
 - A headless self-test of the command queue is built in:
-  `UgreenEQ.app/Contents/MacOS/UgreenEQ --selftest` from the `UgreenEQ` folder (changes the EQ preset briefly, then restores it).
+  `UgreenEQ.app/Contents/MacOS/UgreenEQ --selftest` from the `UgreenEQ` folder (changes the EQ preset briefly, then restores it). `--batterytest` runs the startup path headless and prints the battery level it reads.
 
 ## How it works
 
@@ -53,6 +53,10 @@ Two layers (all in `main.swift`):
   packet protocol (`AA BB CC <cmd> <len> <data> <crc16>`). It keeps the channel open and sends commands
   through a **non-blocking queue**: one packet in flight at a time, replies matched to the packet that was
   sent, one quick retry on a missed reply, reconnect on failure.
+- **`BatteryReader`** — reads the real battery level from the chip's Jieli RCSP service over **BLE**
+  (`AE00`/`AE01`/`AE02`, GetSystemInfo attribute 0). Read-only, no pairing. It connects **before** the
+  classic channel opens, because the chip stops advertising over BLE while the classic channel is in use.
+  If the level cannot be read, the app hides the battery instead of showing a wrong number.
 - **`Model` + SwiftUI views** — an `ObservableObject` the panel binds to. Clicks update the tile
   immediately (optimistic update) and the real state from the headphones' reply overwrites it.
 
@@ -103,6 +107,11 @@ The serial channel can only be opened by one program at a time, so **quit Ugreen
 - **No LDAC on a Mac.** The headphones support hi-res over Bluetooth with LDAC (e.g. from Android). To our
   knowledge macOS offers only SBC and AAC, so over Bluetooth the Mac cannot reach that quality. Use the
   USB-C cable for 96 kHz / 24-bit. (We did not verify codec support on macOS 27.)
+- **Battery level comes from RCSP, not the usual places.** On this firmware the UGREEN protocol's battery byte
+  and the level macOS shows (via the hands-free link) were both stuck at 100% for days, while the RCSP value
+  fell steadily (92% → 91% → 90% over several hours of use). The absolute accuracy of the RCSP number has not
+  been checked against a second trusted source, and the charging flag (probably bit 7) is not shown. If the
+  BLE link cannot be made (for example the headphones are not advertising), no battery is shown.
 - **Feature toggles are lightly verified.** Sound presets and noise control were checked against the real
   headphones. Spatial audio, Game mode, Dual connect and Hi-Q decoding use command numbers taken from
   Gadgetbridge's implementation and have not been individually confirmed on this unit.

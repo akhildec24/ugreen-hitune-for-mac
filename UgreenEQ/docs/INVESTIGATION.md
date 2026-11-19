@@ -112,7 +112,7 @@ set Jazz     →  aa bb cc 05 01 01 a1 91
 
 | Offset | Meaning |
 |---|---|
-| 0 | Battery % |
+| 0 | Battery % — **unreliable: stuck at 100 on this firmware** (see section 4a) |
 | 1–2 | `FF FF` (not understood) |
 | 3 | Noise-control byte (see below) |
 | 4 | EQ preset code |
@@ -128,6 +128,29 @@ set Jazz     →  aa bb cc 05 01 01 a1 91
   measured.
 - **Noise control:** Off `D0`, Light `C1`, Medium `B1`, Deep `A1`, Adaptive `D1`, Transparency `D2`. "Off" can
   read back as `A0`/`B0`/`C0`/`D0`, depending on the last active depth; the app treats all of them as Off.
+
+## 4a. Battery level: what is reported where
+
+| Source | What it said |
+|---|---|
+| macOS (System Information, menu bar), via the hands-free link | 100%, unchanged for days |
+| UGREEN protocol, cmd 4 payload byte 0 | `0x64` = 100, identical on repeated reads |
+| Jieli RCSP over BLE, GetSystemInfo (func `FF`, mask bit 0), attribute type 0 | `0x5C` = 92, later 91, then `0x5A` = 90 |
+
+Request: `FE DC BA C0 07 <len BE16> <sn> FF 00 00 00 01 EF`. Reply: `FE DC BA 00 07 <len> 00 <sn> FF 02 00 <pct> EF`
+(attribute list entries are `len, type, data`; type 0 is the battery). Bit 7 of the value is probably a
+charging flag (not verified).
+
+How other devices report battery to a Mac: Apple's documented route is the hands-free vendor commands
+`AT+XAPL` / `AT+IPHONEACCEV`; HFP 1.7 also has an optional battery HF indicator, some vendors use their own
+commands, and BLE has the standard Battery Service (0x180F). This chip does not expose a Battery Service, and
+macOS shows 100%, so the RCSP value is the only one that moved. We did not capture the hands-free traffic to
+see exactly what the headphones send.
+
+**Ordering constraint.** While the classic RFCOMM channel is open, the chip does not advertise over BLE
+(scan with the app quit: headphones seen; with the app running: not seen). The app therefore connects
+BLE first (6 s limit), then opens RFCOMM. Whether both links stay up together was observed working in the app,
+but is not otherwise characterised. The BLE identifier is cached so later launches can connect directly.
 
 ## 5. Custom EQ over Jieli's standard service — ruled out
 

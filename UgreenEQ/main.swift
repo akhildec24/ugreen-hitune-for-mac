@@ -1,5 +1,6 @@
 import Cocoa
 import IOBluetooth
+import CoreBluetooth
 import SwiftUI
 
 // UGREEN HiTune Max5c menu bar controller.
@@ -180,10 +181,94 @@ final class Headphones: NSObject, IOBluetoothRFCOMMChannelDelegate {
     }
 }
 
+
+// MARK: - Battery over Jieli RCSP (BLE)
+// The UGREEN protocol's battery byte is stuck at 100 on this firmware, so the real level is read from the
+// chip's own RCSP service (BLE AE00/AE01/AE02, GetSystemInfo attribute 0). Read-only, no pairing needed.
+final class BatteryReader: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
+    var onLevel: ((Int?) -> Void)?
+    private var central: CBCentralManager!
+    private var peripheral: CBPeripheral?
+    private var write: CBCharacteristic?
+    private var sn: UInt8 = 0x40
+    private var scanning = false
+
+    override init() { super.init(); central = CBCentralManager(delegate: self, queue: nil) }
+
+    /// Ask for the battery level; the reply arrives through `onLevel`.
+    func request() {
+        guard central.state == .poweredOn else { return }
+        if let p = peripheral, p.state == .connected, let w = write {
+            sn &+= 1
+            let body: [UInt8] = [sn, 0xFF, 0x00, 0x00, 0x00, 0x01]   // func FF, attribute mask bit 0 = battery
+            var f = Data([0xFE, 0xDC, 0xBA, 0xC0, 0x07, UInt8(body.count >> 8), UInt8(body.count & 0xFF)])
+            f.append(contentsOf: body); f.append(0xEF)
+            p.writeValue(f, for: w, type: .withoutResponse)
+        } else if peripheral == nil || peripheral?.state == .disconnected { startScan() }
+    }
+    private static let idKey = "rcspPeripheralID"
+    private func startScan() {
+        // Known headphones: connect directly (pending until they advertise, no scanning needed).
+        if peripheral == nil, let str = UserDefaults.standard.string(forKey: Self.idKey), let id = UUID(uuidString: str),
+           let p = central.retrievePeripherals(withIdentifiers: [id]).first {
+            peripheral = p; p.delegate = self; central.connect(p); return
+        }
+        guard !scanning else { return }
+        scanning = true; central.scanForPeripherals(withServices: nil)
+        // The chip advertises only intermittently: scan in short windows with pauses instead of continuously.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [weak self] in
+            guard let self = self, self.scanning else { return }
+            self.central.stopScan(); self.scanning = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+                if self?.peripheral == nil { self?.startScan() }
+            }
+        }
+    }
+    func centralManagerDidUpdateState(_ c: CBCentralManager) { if c.state == .poweredOn { startScan() } }
+    func centralManager(_ c: CBCentralManager, didDiscover p: CBPeripheral, advertisementData a: [String: Any], rssi: NSNumber) {
+        let name = (a[CBAdvertisementDataLocalNameKey] as? String) ?? p.name ?? ""
+        guard name.contains("HiTune"), peripheral == nil || peripheral?.state == .disconnected else { return }
+        c.stopScan(); scanning = false
+        UserDefaults.standard.set(p.identifier.uuidString, forKey: Self.idKey)
+        peripheral = p; p.delegate = self; c.connect(p)
+    }
+    func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) { p.discoverServices([CBUUID(string: "AE00")]) }
+    func centralManager(_ c: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) { peripheral = nil; write = nil; startScan() }
+    func centralManager(_ c: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) { peripheral = nil; write = nil; onLevel?(nil); startScan() }
+    func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
+        for s in p.services ?? [] { p.discoverCharacteristics([CBUUID(string: "AE01"), CBUUID(string: "AE02")], for: s) }
+    }
+    func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor s: CBService, error: Error?) {
+        for ch in s.characteristics ?? [] {
+            if ch.uuid == CBUUID(string: "AE02") { p.setNotifyValue(true, for: ch) }
+            if ch.uuid == CBUUID(string: "AE01") { write = ch }
+        }
+        request()
+    }
+    func peripheral(_ p: CBPeripheral, didUpdateValueFor ch: CBCharacteristic, error: Error?) {
+        guard ch.uuid == CBUUID(string: "AE02"), let d = ch.value else { return }
+        let b = [UInt8](d)
+        // frame: FE DC BA flag cmd lenHi lenLo | status sn func | attrs... | EF ; attr = len, type, data
+        guard b.count > 11, b[0] == 0xFE, b[4] == 0x07 else { return }
+        var i = 10
+        while i < b.count - 1 {
+            let l = Int(b[i]); if l == 0 { i += 1; continue }
+            if i + l >= b.count { break }
+            if b[i + 1] == 0, l >= 2 { onLevel?(Int(b[i + 2] & 0x7F)); return }   // bit 7 is probably "charging"
+            i += 1 + l
+        }
+    }
+}
+
 // MARK: - Model
 
 final class Model: ObservableObject {
     let hp = Headphones()
+    let battery = BatteryReader()
+    @Published var batteryLevel: Int?
+    private var lastBattery = Date.distantPast
+    private var rfcommAllowed = false
+    private var gateTimer: Timer?
     @Published var state: HPState?
     @Published var connected = false
     @Published var profiles: [Profile] = []
@@ -198,12 +283,24 @@ final class Model: ObservableObject {
 
     init() {
         hp.onChange = { [weak self] in self?.sync() }
+        battery.onLevel = { [weak self] l in DispatchQueue.main.async { self?.batteryLevel = l } }
         if let d = UserDefaults.standard.data(forKey: Self.key),
            let p = try? JSONDecoder().decode([Profile].self, from: d) { profiles = p }
     }
     func persist() { if let d = try? JSONEncoder().encode(profiles) { UserDefaults.standard.set(d, forKey: Self.key) } }
     func sync() { connected = hp.isConnected; state = connected ? hp.state : nil }
-    func refresh() { hp.refresh(); sync() }
+    /// The chip stops advertising over BLE while the classic RFCOMM channel is open, so connect BLE (battery) first,
+    /// then open RFCOMM. If BLE can't be reached within 6 s, go ahead without the battery.
+    private func gate() {
+        guard !rfcommAllowed, gateTimer == nil else { return }
+        gateTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: false) { [weak self] _ in self?.openGate() }
+    }
+    private func openGate() { gateTimer?.invalidate(); gateTimer = nil; rfcommAllowed = true; hp.refresh(); sync() }
+    func refresh() {
+        if !rfcommAllowed { battery.request(); gate(); return }
+        hp.refresh(); sync()
+        if batteryLevel == nil || Date().timeIntervalSince(lastBattery) > 120 { lastBattery = Date(); battery.request() }   // retry until we have a level, then at most every 2 min
+    }
 
     func setEQ(_ c: UInt8) { state?.eq = c; hp.setEQ(c) }
     func setANC(_ r: UInt8) { state?.anc = r; hp.setANC(r) }
@@ -349,7 +446,7 @@ struct ContentView: View {
             }
             Spacer()
             if let s = model.state {
-                HStack(spacing: 4) { Image(systemName: batterySymbol(s.battery)); Text("\(s.battery)%").font(.system(size: 12, weight: .medium)) }
+                if let b = model.batteryLevel { HStack(spacing: 4) { Image(systemName: batterySymbol(b)); Text("\(b)%").font(.system(size: 12, weight: .medium)) } }
             }
         }
     }
@@ -389,6 +486,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.appearsDisabled = !model.connected
         item.button?.toolTip = model.connected ? "HiTune Max5c · Connected" : "HiTune Max5c · Not connected"
     }
+}
+
+if CommandLine.arguments.contains("--batterytest") {   // headless: run the app's real startup path and print what the battery reader gets
+    let m = Model(); let t0 = Date()
+    func ms() -> Int { Int(Date().timeIntervalSince(t0) * 1000) }
+    for t in [0.2, 5, 10, 15, 20, 25] { RunLoop.main.add(Timer(timeInterval: t, repeats: false) { _ in
+        m.refresh(); print("[\(ms()) ms] refresh -> battery=\(m.batteryLevel.map(String.init) ?? "nil") connected=\(m.connected) eq=\(m.state.map { eqLabel($0.eq) } ?? "nil")") }, forMode: .common) }
+    RunLoop.main.run(until: Date().addingTimeInterval(32)); exit(0)
 }
 
 if CommandLine.arguments.contains("--selftest") {
